@@ -1,42 +1,58 @@
+// 保持原签名与返回格式不变：Promise<any[]>
 async function getAccountSummary(accountsPromise: Promise<any[]>) {
+  // 1) 并行取：查询结果 + 三个清单
   const [rowsRes, typesRes, envsRes, langsRes] = await Promise.allSettled([
     accountsPromise,
-    getAccountTypeOptionsMap(),
+    getAccountTypeOptionsMap(),   // 期望: Record<id, label> 或 Array<{id,label}>
     getEnvironmentOptionsMap(),
     getLanguageOptionsMap()
   ]);
 
-  if (rowsRes.status === "rejected") throw rowsRes.reason;
+  if (rowsRes.status  === "rejected") throw rowsRes.reason;
   if (typesRes.status === "rejected") throw typesRes.reason;
-  if (envsRes.status === "rejected") throw envsRes.reason;
+  if (envsRes.status  === "rejected") throw envsRes.reason;
   if (langsRes.status === "rejected") throw langsRes.reason;
 
-  const rows = rowsRes.value;
-  const accountTypes = typesRes.value as Record<string, string>;
-  const hostEnvs     = envsRes.value  as Record<string, string>;
-  const languages    = langsRes.value as Record<string, string>;
+  // 2) 统一把 id 当成 string（避免 1 !== "1"）
+  const S = (x: any) => String(x);
 
-  // 1) 把数据库结果放进 Map
+  // rows：把 groupBy 结果拍平成统一结构
+  const rows = (rowsRes.value as any[]).map(r => ({
+    t: S(r.accountTypeId),
+    e: S(r.envId),
+    l: S(r.langId),
+    c: r._count?._all ?? r.count ?? 0
+  }));
+
+  // 把 options 统一成 Record<string,string>
+  const asRecord = (x: any): Record<string, string> => {
+    if (Array.isArray(x)) return Object.fromEntries(x.map(i => [S(i.id), i.label]));
+    if (x instanceof Map) return Object.fromEntries([...x].map(([k, v]) => [S(k), v as string]));
+    return Object.fromEntries(Object.entries(x).map(([k, v]) => [S(k), v as string]));
+  };
+
+  const accountTypes = asRecord(typesRes.value);
+  const hostEnvs     = asRecord(envsRes.value);
+  const languages    = asRecord(langsRes.value);
+
+  // 3) 结果转为 Map，key=三元组
   const keyOf = (t: string, e: string, l: string) => `${t}|${e}|${l}`;
-  const countMap = new Map<string, number>(
-    rows.map(r => [ keyOf(r.accountTypeId, r.envId, r.langId), r._count._all ])
-  );
+  const countMap = new Map<string, number>(rows.map(r => [keyOf(r.t, r.e, r.l), r.c]));
 
-  // 2) 用三个 map 生成全组合并补齐 count=0
-  const result: any[] = [];
+  // 4) 生成全组合并“补 0”，最后按【原格式】输出
+  const out: any[] = [];
   for (const t of Object.keys(accountTypes)) {
     for (const e of Object.keys(hostEnvs)) {
       for (const l of Object.keys(languages)) {
-        result.push({
-          accountTypeId: t,
-          envId: e,
-          langId: l,
-          label: `[${accountTypes[t]}] ${hostEnvs[e]} / ${languages[l]}`,
-          _count: countMap.get(keyOf(t, e, l)) ?? 0
-        });
+        const cnt = countMap.get(keyOf(t, e, l)) ?? 0;
+        out.push([
+          `${accountTypes[t]}`,                      // Account Type（名称）
+          `${hostEnvs[e]} / ${languages[l]}`,       // Region / Language（名称）
+          cnt                                        // Count（数字）
+        ]);
       }
     }
   }
 
-  return result;
+  return out; // ====> 保持你原本的二维数组格式
 }
