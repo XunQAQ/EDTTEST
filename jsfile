@@ -1,34 +1,42 @@
-it('Navigate to My balances and verify the balances', async function () {
-    await homePage.retry();
+async function getAccountSummary(accountsPromise: Promise<any[]>) {
+  const [rowsRes, typesRes, envsRes, langsRes] = await Promise.allSettled([
+    accountsPromise,
+    getAccountTypeOptionsMap(),
+    getEnvironmentOptionsMap(),
+    getLanguageOptionsMap()
+  ]);
 
-    // 滑动到余额区域
-    await touchActions.swipeToView(homePage.lbMyCombinedBalancesOwned());
+  if (rowsRes.status === "rejected") throw rowsRes.reason;
+  if (typesRes.status === "rejected") throw typesRes.reason;
+  if (envsRes.status === "rejected") throw envsRes.reason;
+  if (langsRes.status === "rejected") throw langsRes.reason;
 
-    // 获取所有 TextView 元素（假设这些是余额项）
-    const children = await $$('//android.widget.TextView');
-    const total = children.length;
-    console.log('Number of child elements:', total);
+  const rows = rowsRes.value;
+  const accountTypes = typesRes.value as Record<string, string>;
+  const hostEnvs     = envsRes.value  as Record<string, string>;
+  const languages    = langsRes.value as Record<string, string>;
 
-    // 获取第一个余额文本
-    const currencyAmount = await (await homePage.lbMyBalancesOwned()).getText();
-    console.log("Balance number I own is: " + currencyAmount);
+  // 1) 把数据库结果放进 Map
+  const keyOf = (t: string, e: string, l: string) => `${t}|${e}|${l}`;
+  const countMap = new Map<string, number>(
+    rows.map(r => [ keyOf(r.accountTypeId, r.envId, r.langId), r._count._all ])
+  );
 
-    // 验证是否包含美元符号
-    assert.isTrue(currencyAmount.includes('$'), 'Currency amount should contain $');
-
-    await screenShot(this.test);
-
-    // 继续往下滑动查看欠款余额
-    await touchActions.swipeUp();
-
-    // 验证欠款余额是否存在
-    if (await (await homePage.lbMyBalancesOwed()).isExisting()) {
-        let owedAmount = await (await homePage.lbMyBalancesOwed()).getText();
-        console.log("Balance I owe is: " + owedAmount);
-
-        assert.isTrue(owedAmount.includes('$'), 'Owed amount should contain $');
-        await screenShot(this.test);
-    } else {
-        console.log("No owed balance element found.");
+  // 2) 用三个 map 生成全组合并补齐 count=0
+  const result: any[] = [];
+  for (const t of Object.keys(accountTypes)) {
+    for (const e of Object.keys(hostEnvs)) {
+      for (const l of Object.keys(languages)) {
+        result.push({
+          accountTypeId: t,
+          envId: e,
+          langId: l,
+          label: `[${accountTypes[t]}] ${hostEnvs[e]} / ${languages[l]}`,
+          _count: countMap.get(keyOf(t, e, l)) ?? 0
+        });
+      }
     }
-});
+  }
+
+  return result;
+}
